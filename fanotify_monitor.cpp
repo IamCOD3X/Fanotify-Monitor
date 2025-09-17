@@ -16,6 +16,7 @@ static JavaVM *gJvm = nullptr;
 static jobject gCallbackObj = nullptr;
 static jmethodID gOnEventMethod = nullptr;
 static std::atomic<bool> gRunning(false);
+static int gTargetUid = -1;
 
 void monitorLoop() {
     int fanFd = fanotify_init(FAN_CLASS_NOTIF | FAN_CLOEXEC, O_RDONLY | O_LARGEFILE);
@@ -43,8 +44,21 @@ void monitorLoop() {
             char path[PATH_MAX] = {0};
             char linkPath[64];
             snprintf(linkPath, sizeof(linkPath), "/proc/self/fd/%d", meta->fd);
-            readlink(linkPath, path, sizeof(path)-1);
-            close(meta->fd);
+            ssize_t r = readlink(linkPath, path, sizeof(path)-1);
+            if (r <= 0) {
+                close(meta->fd);
+                continue;
+            }
+            path[r] = '\0';
+
+            // Filter by UID
+            struct stat st;
+            if (stat(path, &st) == 0) {
+                if (gTargetUid != -1 && st.st_uid != gTargetUid) {
+                    close(meta->fd);
+                    continue;
+                }
+            }
 
             // Resolve process name from PID
             char procCmd[256] = {0};
@@ -57,7 +71,10 @@ void monitorLoop() {
 
             // Attach JVM and call back to Java
             JNIEnv *env;
-            gJvm->AttachCurrentThread(&env, nullptr);
+            if (gJvm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+                close(meta->fd);
+                continue;
+            }
 
             jstring jPath = env->NewStringUTF(path);
             jstring jProc = env->NewStringUTF(procCmd);
@@ -68,6 +85,9 @@ void monitorLoop() {
 
             env->DeleteLocalRef(jPath);
             env->DeleteLocalRef(jProc);
+
+            gJvm->DetachCurrentThread();
+            close(meta->fd);
         }
     }
 
@@ -76,7 +96,7 @@ void monitorLoop() {
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_iamcod3x_privacypeek_NativeFanotify_startMonitor(JNIEnv *env, jobject thiz) {
+Java_com_iamcod3x_privacypeek_manager_NativeFanotify_startMonitor(JNIEnv *env, jobject thiz) {
     if (gRunning) return;
 
     // Hold reference to Java callback
@@ -91,8 +111,14 @@ Java_com_iamcod3x_privacypeek_NativeFanotify_startMonitor(JNIEnv *env, jobject t
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_iamcod3x_privacypeek_NativeFanotify_stopMonitor(JNIEnv *, jobject) {
+Java_com_iamcod3x_privacypeek_manager_NativeFanotify_stopMonitor(JNIEnv *, jobject) {
     gRunning = false;
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_iamcod3x_privacypeek_manager_NativeFanotify_setTargetUid(JNIEnv *, jobject, jint uid) {
+    gTargetUid = uid;
 }
 
 jint JNI_OnLoad(JavaVM *vm, void *) {
