@@ -47,7 +47,8 @@ for ARCH in "${ARCHS[@]}"; do
     mkdir -p "$ARCH_OUT"
 
     echo "➡️ Building for $ARCH..."
-    $TOOL -fPIC -shared "$SRC" \
+    $TOOL -static-libstdc++ \
+    	-fPIC -shared "$SRC" \
         -llog \
         -o "$ARCH_OUT/libfanotify_monitor.so"
 
